@@ -66,12 +66,10 @@ class LearnedSinusoidalPosEmb(nn.Module):
         super(LearnedSinusoidalPosEmb, self).__init__()
         assert (dim % 2) == 0
         half_dim = dim // 2
-        self.weights = nn.Parameter(torch.exp(
-            -math.log(10000) * torch.arange(start=0, end=dim // 2, dtype=torch.float32) / half_dim
-        ))
+        self.weights = nn.Parameter(torch.randn(half_dim))
 
     def forward(self, x):
-        freq = torch.einsum('b,d->bd', x, self.weights)
+        freq = torch.einsum('b,d->bd', x, self.weights) * 2 * math.pi
         return torch.cat([freq.sin(), freq.cos()], dim=-1)
 
 
@@ -145,7 +143,7 @@ class ConsistencyMNIST(nn.Module):
 
     def denoise(self, model, x_t, sigmas, **model_kwargs):
         c_skip, c_out, c_in = self.get_scaling(sigmas)
-        rescaled_t = 1000 * 0.25 * torch.log(sigmas + 1e-44)
+        rescaled_t = 0.25 * torch.log(sigmas + 1e-44)
         model_output = model(c_in.view(-1, 1, 1, 1) * x_t, rescaled_t, **model_kwargs)
         denoised = c_out.view(-1, 1, 1, 1) * model_output + c_skip.view(-1, 1, 1, 1) * x_t
         return model_output, denoised
