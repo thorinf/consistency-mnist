@@ -198,9 +198,9 @@ class ConsistencyMNIST(nn.Module):
             _, x = self.denoise(self.score_model_ema, x, t)
 
             if return_list:
-                x_list.append(x.clamp(0.0, 1.0))
+                x_list.append(x.clamp(-1.0, 1.0))
 
-        return x_list if return_list else x.clamp(0.0, 1.0)
+        return x_list if return_list else x.clamp(-1.0, 1.0)
 
 
 def plot_images(images, subplot_shape, name, path):
