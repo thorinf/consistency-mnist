@@ -78,8 +78,13 @@ class UNet(nn.Module):
         super(UNet, self).__init__()
         self.time_mlp = nn.Sequential(
             LearnedSinusoidalPosEmb(128),
+            nn.SiLU(),
+            nn.Linear(128, 256)
+        )
+        self.cond_emb = nn.Sequential(
+            nn.Embedding(11, 128),
+            nn.SiLU(),
             nn.Linear(128, 256),
-            nn.GELU()
         )
         self.down1 = DownBlock(1, 128, dropout_prob=dropout_prob)
         self.down2 = DownBlock(128, 256, dropout_prob=dropout_prob)
@@ -89,11 +94,19 @@ class UNet(nn.Module):
         self.act = nn.SiLU()
         self.output = nn.Conv2d(128, 1, kernel_size=1)
 
-    def forward(self, x, t):
+    def forward(self, x, t, label=None):
+        if label is None:
+            label = torch.ones(x.shape[0], dtype=torch.int64, device=x.device)
+        elif self.training:
+            label = (label + 1).masked_fill(torch.rand_like(label, device=x.device, dtype=x.dtype) < 0.5, 0)
+        else:
+            label = label + 1
         time_emb = self.time_mlp(t)
+        cond = self.cond_emb(label)
         x, skip1 = self.down1(x)
         x, skip2 = self.down2(x)
-        x = self.conv_block(x + time_emb[:, :, None, None])
+        x = (x * cond[:, :, None, None]) + time_emb[:, :, None, None]
+        x = self.conv_block(x)
         x = self.up1(x, skip2)
         x = self.up2(x, skip1)
         x = self.act(x)
@@ -148,17 +161,17 @@ class ConsistencyMNIST(nn.Module):
         denoised = c_out.view(-1, 1, 1, 1) * model_output + c_skip.view(-1, 1, 1, 1) * x_t
         return model_output, denoised
 
-    def loss_t(self, x, label, t, t_next):
+    def loss_t(self, x, t, t_next, **model_kwargs):
         z = torch.randn_like(x, device=x.device)
 
         x_t = x + z * t.view(-1, 1, 1, 1)
         x_t_next = (x + z * t_next.view(-1, 1, 1, 1)).detach()
 
         dropout_state = torch.get_rng_state()
-        _, denoised_x = self.denoise(self.score_model, x_t, t)
+        _, denoised_x = self.denoise(self.score_model, x_t, t, **model_kwargs)
         with torch.no_grad():
             torch.set_rng_state(dropout_state)
-            _, target_x = self.denoise(self.score_model_ema, x_t_next, t_next)
+            _, target_x = self.denoise(self.score_model_ema, x_t_next, t_next, **model_kwargs)
             target_x = target_x.detach()
 
         snrs = self.get_snr(t)
@@ -166,7 +179,7 @@ class ConsistencyMNIST(nn.Module):
 
         return (((denoised_x - target_x) ** 2.0).mean(dim=[1, 2, 3]) * weights).mean()
 
-    def compute_loss(self, x, label, num_scales):
+    def compute_loss(self, x, num_scales, **model_kwargs):
         offset = 1.0 / (num_scales - 1)
 
         if self.continuous:
@@ -180,13 +193,13 @@ class ConsistencyMNIST(nn.Module):
         t_1 = self.rho_schedule(rand_u_1)
         t_2 = self.rho_schedule(rand_u_2)
 
-        return self.loss_t(x, label, t_1, t_2)
+        return self.loss_t(x, t_1, t_2, **model_kwargs)
 
     @torch.no_grad()
-    def forward(self, x, ts, return_list=False):
+    def forward(self, x, ts, return_list=False, **model_kwargs):
         x_list = []
 
-        _, x = self.denoise(self.score_model_ema, x, ts[0].unsqueeze(0))
+        _, x = self.denoise(self.score_model_ema, x, ts[0].unsqueeze(0), **model_kwargs)
 
         if return_list:
             x_list.append(x)
@@ -195,7 +208,7 @@ class ConsistencyMNIST(nn.Module):
             t = t.unsqueeze(0)
             z = torch.randn_like(x)
             x = x + math.sqrt(t ** 2 - self.sigma_min ** 2) * z
-            _, x = self.denoise(self.score_model_ema, x, t)
+            _, x = self.denoise(self.score_model_ema, x, t, **model_kwargs)
 
             if return_list:
                 x_list.append(x.clamp(-1.0, 1.0))
@@ -235,7 +248,7 @@ def plot_images_animation(images_list, subplot_shape, name, path):
 def train():
     parser = argparse.ArgumentParser()
     parser.add_argument('-ep', '--epochs', type=int, default=100)
-    parser.add_argument('-b', '--batch_size', type=int, default=64)
+    parser.add_argument('-b', '--batch_size', type=int, default=256)
     parser.add_argument('-lr', '--learning_rate', type=float, default=1e-4)
     parser.add_argument('-wd', '--weight_decay', type=float, default=1e-4)
     parser.add_argument('-acc', '--accumulation_steps', type=int, default=1)
@@ -247,7 +260,7 @@ def train():
     parser.add_argument('-sdat', '--sigma_data', type=float, default=0.6)
     parser.add_argument('-rho', '--rho', type=float, default=7.0)
 
-    parser.add_argument('-mu0', '--mu_zero', type=float, default=0.95)
+    parser.add_argument('-mu0', '--mu_zero', type=float, default=0.9)
     parser.add_argument('-s0', '--s_zero', type=float, default=2.0)
     parser.add_argument('-s1', '--s_one', type=float, default=150.0)
 
@@ -312,10 +325,9 @@ def train():
 
     for ep in range(checkpoint.get('epochs', 0), args.epochs):
         model.train()
-        model.score_model_ema.eval()
 
-        N = math.ceil(
-            math.sqrt(((ep + 1) * ((args.s_one + 1) ** 2 - args.s_zero ** 2) / args.epochs) + args.s_zero ** 2) - 1) + 1
+        elapsed = ep / args.epochs
+        N = math.ceil(math.sqrt((elapsed * ((args.s_one + 1) ** 2 - args.s_zero ** 2)) + args.s_zero ** 2) - 1) + 1
         mu = math.exp(args.s_zero * math.log(args.mu_zero) / N)
 
         pbar = tqdm(dataloader)
@@ -326,7 +338,7 @@ def train():
             img = img.to(device)
             label = label.to(device)
 
-            loss = model.compute_loss(img, label, N)
+            loss = model.compute_loss(img, N, label=label)
 
             pbar.set_postfix({
                 "loss": loss.item()
@@ -352,8 +364,9 @@ def train():
         with torch.no_grad():
             ts = model.rho_schedule(torch.arange(num_steps, device=device) / num_steps)
             x_init = torch.randn(16, 1, 28, 28, device=device) * ts[0]
-            x_list = model(x_init, ts, return_list=True)
-            x_list = [((x + 1) / 2).permute(0, 2, 3, 1).cpu().numpy() for x in x_list]
+            label = torch.tensor([x if x < 10 else -1 for x in range(16)], dtype=torch.int64, device=device)
+            x_list = model(x_init, ts, label=label, return_list=True)
+            x_list = [((x + 1) / 2).clamp(0.0, 1.0).permute(0, 2, 3, 1).cpu().numpy() for x in x_list]
 
         plot_images(x_list[-1], (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.png")
         plot_images_animation(x_list, (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.gif")
