@@ -78,16 +78,16 @@ class UNet(nn.Module):
         super(UNet, self).__init__()
         self.time_mlp = nn.Sequential(
             LearnedSinusoidalPosEmb(128),
-            nn.Linear(128, 256),
-            nn.GELU()
+            nn.SiLU(),
+            nn.Linear(128, 256)
         )
-        self.down1 = DownBlock(1, 128, dropout_prob=dropout_prob)
+        self.down1 = DownBlock(3, 128, dropout_prob=dropout_prob)
         self.down2 = DownBlock(128, 256, dropout_prob=dropout_prob)
         self.conv_block = ConvBlock(256, 512, dropout_prob=dropout_prob)
         self.up1 = UpBlock(512, 256, dropout_prob=dropout_prob)
         self.up2 = UpBlock(256, 128, dropout_prob=dropout_prob)
         self.act = nn.SiLU()
-        self.output = nn.Conv2d(128, 1, kernel_size=1)
+        self.output = nn.Conv2d(128, 3, kernel_size=1)
 
     def forward(self, x, t):
         time_emb = self.time_mlp(t)
@@ -164,7 +164,10 @@ class ConsistencyMNIST(nn.Module):
         snrs = self.get_snr(t)
         weights = self.get_weights(snrs)
 
-        return (((denoised_x - target_x) ** 2.0).mean(dim=[1, 2, 3]) * weights).mean()
+        sco_mse = ((denoised_x - x) ** 2.0).mean(dim=[1, 2, 3])
+        con_mse = ((denoised_x - target_x) ** 2.0).mean(dim=[1, 2, 3])
+
+        return (sco_mse + con_mse * weights).mean()
 
     def compute_loss(self, x, label, num_scales):
         offset = 1.0 / (num_scales - 1)
@@ -198,9 +201,9 @@ class ConsistencyMNIST(nn.Module):
             _, x = self.denoise(self.score_model_ema, x, t)
 
             if return_list:
-                x_list.append(x.clamp(0.0, 1.0))
+                x_list.append(x.clamp(-1.0, 1.0))
 
-        return x_list if return_list else x.clamp(0.0, 1.0)
+        return x_list if return_list else x.clamp(-1.0, 1.0)
 
 
 def plot_images(images, subplot_shape, name, path):
@@ -209,7 +212,7 @@ def plot_images(images, subplot_shape, name, path):
     axes = axes.flatten()
 
     for ax, img in zip(axes, images):
-        ax.imshow(img, cmap='gray')
+        ax.imshow(img)
         ax.axis('off')
 
     plt.savefig(path)
@@ -224,7 +227,7 @@ def plot_images_animation(images_list, subplot_shape, name, path):
         plots = []
         images = images_list[i]
         for ax, img in zip(axes, images):
-            plots.append(ax.imshow(img, cmap='gray'))
+            plots.append(ax.imshow(img))
             plots.append(ax.axis('off'))
         return plots
 
@@ -234,8 +237,8 @@ def plot_images_animation(images_list, subplot_shape, name, path):
 
 def train():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-ep', '--epochs', type=int, default=100)
-    parser.add_argument('-b', '--batch_size', type=int, default=64)
+    parser.add_argument('-ep', '--epochs', type=int, default=1000)
+    parser.add_argument('-b', '--batch_size', type=int, default=256)
     parser.add_argument('-lr', '--learning_rate', type=float, default=1e-4)
     parser.add_argument('-wd', '--weight_decay', type=float, default=1e-4)
     parser.add_argument('-acc', '--accumulation_steps', type=int, default=1)
@@ -286,7 +289,7 @@ def train():
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
 
-    dataset = torchvision.datasets.MNIST(
+    dataset = torchvision.datasets.CIFAR10(
         root=args.data_path,
         train=True,
         download=True,
@@ -351,9 +354,9 @@ def train():
         num_steps = 10
         with torch.no_grad():
             ts = model.rho_schedule(torch.arange(num_steps, device=device) / num_steps)
-            x_init = torch.randn(16, 1, 28, 28, device=device) * ts[0]
+            x_init = torch.randn(16, 3, 32, 32, device=device) * ts[0]
             x_list = model(x_init, ts, return_list=True)
-            x_list = [((x + 1) / 2).permute(0, 2, 3, 1).cpu().numpy() for x in x_list]
+            x_list = [((x + 1) / 2).clamp(0.0, 1.0).permute(0, 2, 3, 1).cpu().numpy() for x in x_list]
 
         plot_images(x_list[-1], (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.png")
         plot_images_animation(x_list, (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.gif")
