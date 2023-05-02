@@ -79,11 +79,13 @@ class UNet(nn.Module):
         self.time_mlp = nn.Sequential(
             LearnedSinusoidalPosEmb(128),
             nn.SiLU(),
+            nn.Dropout(p=dropout_prob),
             nn.Linear(128, 256)
         )
         self.cond_emb = nn.Sequential(
             nn.Embedding(11, 128),
             nn.SiLU(),
+            nn.Dropout(p=dropout_prob),
             nn.Linear(128, 256),
         )
         self.down1 = DownBlock(1, 128, dropout_prob=dropout_prob)
@@ -98,14 +100,14 @@ class UNet(nn.Module):
         if label is None:
             label = torch.ones(x.shape[0], dtype=torch.int64, device=x.device)
         elif self.training:
-            label = (label + 1).masked_fill(torch.rand_like(label, device=x.device, dtype=x.dtype) < 0.5, 0)
+            label = (label + 1).masked_fill(torch.rand_like(label, device=x.device, dtype=x.dtype) < 0.1, 0)
         else:
             label = label + 1
         time_emb = self.time_mlp(t)
         cond = self.cond_emb(label)
         x, skip1 = self.down1(x)
         x, skip2 = self.down2(x)
-        x = (x * cond[:, :, None, None]) + time_emb[:, :, None, None]
+        x = x * cond[:, :, None, None] + time_emb[:, :, None, None]
         x = self.conv_block(x)
         x = self.up1(x, skip2)
         x = self.up2(x, skip1)
@@ -209,40 +211,51 @@ class ConsistencyMNIST(nn.Module):
             z = torch.randn_like(x)
             x = x + math.sqrt(t ** 2 - self.sigma_min ** 2) * z
             _, x = self.denoise(self.score_model_ema, x, t, **model_kwargs)
+            x = x.clamp(-1.0, 1.0)
 
             if return_list:
-                x_list.append(x.clamp(-1.0, 1.0))
+                x_list.append(x)
 
-        return x_list if return_list else x.clamp(-1.0, 1.0)
+        return x_list if return_list else x
 
 
-def plot_images(images, subplot_shape, name, path):
-    fig, axes = plt.subplots(*subplot_shape)
+def plot_images(images, subplot_shape, name, path, labels=None):
+    fig_width = subplot_shape[1] * 2.0
+    fig_height = subplot_shape[0] * 2.0
+    fig, axes = plt.subplots(*subplot_shape, figsize=(fig_width, fig_height))
     fig.suptitle(name, fontsize=16)
     axes = axes.flatten()
 
-    for ax, img in zip(axes, images):
+    for i, (ax, img) in enumerate(zip(axes, images)):
         ax.imshow(img, cmap='gray')
         ax.axis('off')
+        if labels is not None:
+            ax.set_title(labels[i], fontsize=8)
 
     plt.savefig(path)
+    plt.close()
 
 
-def plot_images_animation(images_list, subplot_shape, name, path):
-    fig, axes = plt.subplots(*subplot_shape)
+def plot_images_animation(images_list, subplot_shape, name, path, labels=None):
+    fig_width = subplot_shape[1] * 2.0
+    fig_height = subplot_shape[0] * 2.0
+    fig, axes = plt.subplots(*subplot_shape, figsize=(fig_width, fig_height))
     fig.suptitle(name, fontsize=16)
     axes = axes.flatten()
 
     def animate(i):
         plots = []
         images = images_list[i]
-        for ax, img in zip(axes, images):
+        for i, (ax, img) in enumerate(zip(axes, images)):
             plots.append(ax.imshow(img, cmap='gray'))
             plots.append(ax.axis('off'))
+            if labels is not None:
+                plots.append(ax.set_title(labels[i], fontsize=8))
         return plots
 
     anim = FuncAnimation(fig, animate, frames=len(images_list), interval=10, blit=False, repeat=True)
     anim.save(path, writer='pillow', fps=10)
+    plt.close()
 
 
 def train():
@@ -257,12 +270,12 @@ def train():
     parser.add_argument('-do', '--dropout_prob', type=float, default=0.0)
     parser.add_argument('-smin', '--sigma_min', type=float, default=0.002)
     parser.add_argument('-smax', '--sigma_max', type=float, default=80.0)
-    parser.add_argument('-sdat', '--sigma_data', type=float, default=0.6)
+    parser.add_argument('-sdat', '--sigma_data', type=float, default=0.5)
     parser.add_argument('-rho', '--rho', type=float, default=7.0)
 
-    parser.add_argument('-mu0', '--mu_zero', type=float, default=0.9)
+    parser.add_argument('-mu0', '--mu_zero', type=float, default=0.95)
     parser.add_argument('-s0', '--s_zero', type=float, default=2.0)
-    parser.add_argument('-s1', '--s_one', type=float, default=150.0)
+    parser.add_argument('-s1', '--s_one', type=float, default=20.0)
 
     parser.add_argument('-ckpt', '--checkpoint', type=str, required=True)
     parser.add_argument('-d', '--data_path', type=str, required=True)
@@ -323,15 +336,17 @@ def train():
     if 'optimizer_state_dict' in checkpoint:
         optim.load_state_dict(checkpoint['optimizer_state_dict'])
 
+    global_step = checkpoint.get('global_step', 0)
+
     for ep in range(checkpoint.get('epochs', 0), args.epochs):
         model.train()
+
+        pbar = tqdm(dataloader)
+        pbar.set_description(f"epoch: {ep}")
 
         elapsed = ep / args.epochs
         N = math.ceil(math.sqrt((elapsed * ((args.s_one + 1) ** 2 - args.s_zero ** 2)) + args.s_zero ** 2) - 1) + 1
         mu = math.exp(args.s_zero * math.log(args.mu_zero) / N)
-
-        pbar = tqdm(dataloader)
-        pbar.set_description(f"epoch: {ep}")
 
         for idx, (img, label) in enumerate(pbar):
             img = (img * 2) - 1
@@ -351,13 +366,18 @@ def train():
                 model.update_ema(mu)
                 optim.zero_grad()
                 torch.cuda.empty_cache()
+                global_step += 1
 
         checkpoint = {
             'epochs': ep + 1,
+            'global_step': global_step,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optim.state_dict()
         }
         torch.save(checkpoint, args.checkpoint)
+
+        if (ep + 1) % 5 != 0:
+            continue
 
         model.score_model_ema.eval()
         num_steps = 10
@@ -368,8 +388,20 @@ def train():
             x_list = model(x_init, ts, label=label, return_list=True)
             x_list = [((x + 1) / 2).clamp(0.0, 1.0).permute(0, 2, 3, 1).cpu().numpy() for x in x_list]
 
-        plot_images(x_list[-1], (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.png")
-        plot_images_animation(x_list, (4, 4), f"Epoch: {ep}, Steps: {num_steps}", f"epoch-{ep}_steps-{num_steps}.gif")
+        plot_images(
+            images=x_list[-1],
+            subplot_shape=(4, 4),
+            name=f"Epoch: {ep}, Steps: {num_steps}",
+            path=f"epoch-{ep}_steps-{num_steps}.png",
+            labels=label.tolist()
+        )
+        plot_images_animation(
+            images_list=x_list,
+            subplot_shape=(4, 4),
+            name=f"Epoch: {ep}, Steps: {num_steps}",
+            path=f"epoch-{ep}_steps-{num_steps}.gif",
+            labels=label.tolist()
+        )
 
 
 if __name__ == "__main__":
