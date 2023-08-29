@@ -87,7 +87,7 @@ class Consistency:
         return self.loss_t(x, t_1, t_2, **model_kwargs)
 
     @torch.no_grad()
-    def sample(self, x, ts, return_list=False, **model_kwargs):
+    def sample(self, x, ts, z=None, return_list=False, **model_kwargs):
         x_list = []
 
         _, x = self.denoise(self.ema_score_model, x, ts[0].unsqueeze(0), **model_kwargs)
@@ -97,7 +97,7 @@ class Consistency:
 
         for t in ts[1:]:
             t = t.unsqueeze(0)
-            z = torch.randn_like(x)
+            z = torch.randn_like(x) if z is None else z
             x = x + math.sqrt(t ** 2 - self.sigma_min ** 2) * z
             _, x = self.denoise(self.ema_score_model, x, t, **model_kwargs)
             x = x.clamp(-1.0, 1.0)

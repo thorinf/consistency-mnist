@@ -62,7 +62,7 @@ def train():
     ema_score_model.to(device)
 
     if 'ema_model_state_dict' in checkpoint:
-        score_model.load_state_dict(checkpoint['ema_model_state_dict'])
+        ema_score_model.load_state_dict(checkpoint['ema_model_state_dict'])
     else:
         ema_score_model.load_state_dict(score_model.state_dict())
 
