@@ -105,7 +105,7 @@ class UNet(nn.Module):
         x = x.permute(0, 3, 1, 2)
         x, skip1 = self.down1(x)
         x, skip2 = self.down2(x)
-        x = x * append_dims(cond, x.ndim) + append_dims(time_emb, x.ndim)
+        x = (x * append_dims(cond, x.ndim)) + append_dims(time_emb, x.ndim)
         x = self.conv_block(x)
         x = self.up1(x, skip2)
         x = self.up2(x, skip1)

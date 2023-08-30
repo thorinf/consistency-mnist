@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from model import UNet
 from consistency import Consistency
-from utils import count_parameters, plot_images, plot_images_animation
+from utils import count_parameters, update_model_ema, plot_images, plot_images_animation
 
 
 def train():
@@ -67,13 +67,11 @@ def train():
         ema_score_model.load_state_dict(score_model.state_dict())
 
     consistency = Consistency(
-        score_model=score_model,
-        ema_score_model=ema_score_model,
-        continuous=args.continuous,
         sigma_min=args.sigma_min,
         sigma_max=args.sigma_max,
         sigma_data=args.sigma_data,
-        rho=args.rho
+        rho=args.rho,
+        continuous=args.continuous
     )
 
     dataset = torchvision.datasets.MNIST(
@@ -119,7 +117,13 @@ def train():
             data = data.to(device)
             labels = labels.to(device)
 
-            loss = consistency.compute_loss(data, N, labels=labels)
+            loss = consistency.compute_loss(
+                model=score_model,
+                target_model=score_model,
+                x_target=data,
+                num_scales=N,
+                labels=labels
+            )
 
             pbar.set_postfix({
                 "loss": loss.item()
@@ -129,7 +133,7 @@ def train():
 
             if ((idx + 1) % args.accumulation_steps == 0) or (idx + 1 == len(dataloader)):
                 optim.step()
-                consistency.update_ema(mu)
+                update_model_ema(score_model, ema_score_model, mu)
                 optim.zero_grad()
                 global_step += 1
 
@@ -145,14 +149,19 @@ def train():
         if (ep + 1) % 5 != 0:
             continue
 
-        score_model.eval()
         ema_score_model.eval()
         num_steps = 10
         with torch.no_grad():
             ts = consistency.rho_schedule(torch.arange(num_steps, device=device) / num_steps)
-            x_init = torch.randn((16, 28, 28, 1), device=device) * ts[0]
+            x_start = torch.randn((16, 28, 28, 1), device=device) * ts[0]
             labels = torch.tensor([x if x < 10 else -1 for x in range(16)], dtype=torch.int64, device=device)
-            x_list = consistency.sample(x_init, ts, labels=labels, return_list=True)
+            x_list = consistency.sample(
+                model=ema_score_model,
+                x_start=x_start,
+                ts=ts,
+                return_all=True,
+                labels=labels
+            )
             x_list = [((x + 1) / 2).clamp(0.0, 1.0).cpu().numpy() for x in x_list]
 
         plot_images(

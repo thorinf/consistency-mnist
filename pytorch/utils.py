@@ -1,3 +1,6 @@
+import torch
+import torch.nn as nn
+
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
@@ -9,8 +12,14 @@ def append_dims(tensor, target_dims):
     return tensor[(...,) + (None,) * (target_dims - tensor_dims)]
 
 
-def count_parameters(model):
+def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+@torch.no_grad()
+def update_model_ema(model: nn.Module, ema_model: nn.Module, mu: float = 0.95) -> None:
+    for weight, ema_weight in zip(model.parameters(), ema_model.parameters()):
+        ema_weight.mul_(mu).add_(weight, alpha=1 - mu)
 
 
 def plot_images(images, subplot_shape, name, path, labels=None):
