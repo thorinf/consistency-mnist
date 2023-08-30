@@ -53,7 +53,7 @@ class Consistency:
             **model_kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         c_skip, c_out, c_in = self.get_scaling(sigmas)
-        rescaled_t = 0.25 * torch.log(sigmas + 1e-44)
+        rescaled_t = append_dims(0.25 * torch.log(sigmas + 1e-44), x_t.ndim)
         model_output = model(append_dims(c_in, x_t.ndim) * x_t, rescaled_t, **model_kwargs)
         denoised = append_dims(c_out, model_output.ndim) * model_output + append_dims(c_skip, x_t.ndim) * x_t
         return model_output, denoised
@@ -118,22 +118,25 @@ class Consistency:
             x_start: torch.Tensor,
             ts: torch.Tensor,
             z: torch.Tensor = None,
+            x_min: float = -1.0,
+            x_max: float = 1.0,
             return_all: bool = False,
             **model_kwargs: Any
     ) -> Union[torch.Tensor, List[torch.Tensor]]:
         x_list = []
 
-        _, x = self.denoise(model, x_start, ts[0].unsqueeze(0), **model_kwargs)
+        t = append_dims(ts[0], x_start.ndim)
+        _, x = self.denoise(model, x_start, t, **model_kwargs)
 
         if return_all:
             x_list.append(x)
 
         for t in ts[1:]:
-            t = t.unsqueeze(0)
+            t = append_dims(t, x.ndim)
             z = torch.randn_like(x) if z is None else z
-            x = x + math.sqrt(t ** 2 - self.sigma_min ** 2) * z
+            x = x + z * (t ** 2 - self.sigma_min ** 2).sqrt()
             _, x = self.denoise(model, x, t, **model_kwargs)
-            x = x.clamp(-1.0, 1.0)
+            x = x.clamp(x_min, x_max)
 
             if return_all:
                 x_list.append(x)

@@ -60,7 +60,7 @@ class LearnedSinusoidalPosEmb(nn.Module):
         self.weights = nn.Parameter(torch.randn(half_dim))
 
     def forward(self, x):
-        freq = torch.einsum('b,d->bd', x, self.weights) * 2 * math.pi
+        freq = x @ self.weights.unsqueeze(0)
         return torch.cat([append_dims(x, freq.ndim), freq.sin(), freq.cos()], dim=-1)
 
 
@@ -71,13 +71,13 @@ class UNet(nn.Module):
             LearnedSinusoidalPosEmb(128),
             nn.SiLU(),
             nn.Dropout(p=dropout_prob),
-            nn.Linear(129, 256)
+            nn.Linear(129, 512)
         )
         self.cond_emb = nn.Sequential(
             nn.Embedding(11, 128),
             nn.SiLU(),
             nn.Dropout(p=dropout_prob),
-            nn.Linear(128, 256),
+            nn.Linear(128, 512),
         )
         self.down1 = DownBlock(input_dim, 128, dropout_prob=dropout_prob)
         self.down2 = DownBlock(128, 256, dropout_prob=dropout_prob)
@@ -99,13 +99,14 @@ class UNet(nn.Module):
             # Bias labels for conditioning, ID zero is unconditional
             labels = labels + 1
 
-        time_emb = self.time_mlp(t)
-        cond = self.cond_emb(labels)
+        t, labels = append_dims(t, x.ndim), append_dims(labels, x.ndim - 1)
+        emb = self.time_mlp(t) + self.cond_emb(labels)
+        scale, shift = torch.chunk(emb.permute(0, 3, 1, 2), 2, dim=1)
 
         x = x.permute(0, 3, 1, 2)
         x, skip1 = self.down1(x)
         x, skip2 = self.down2(x)
-        x = (x * append_dims(cond, x.ndim)) + append_dims(time_emb, x.ndim)
+        x = (x * scale) + shift
         x = self.conv_block(x)
         x = self.up1(x, skip2)
         x = self.up2(x, skip1)
