@@ -30,8 +30,8 @@ def plot_images(images, subplot_shape, name, path, labels=None):
     axes = axes.flatten()
 
     for i, (ax, img) in enumerate(zip(axes, images)):
-        ax.imshow(img, cmap='gray')
-        ax.axis('off')
+        ax.imshow(img, cmap="gray")
+        ax.axis("off")
         if labels is not None:
             ax.set_title(labels[i], fontsize=8)
 
@@ -50,12 +50,12 @@ def plot_images_animation(images_list, subplot_shape, name, path, labels=None):
         plots = []
         images = images_list[i]
         for i, (ax, img) in enumerate(zip(axes, images)):
-            plots.append(ax.imshow(img, cmap='gray'))
-            plots.append(ax.axis('off'))
+            plots.append(ax.imshow(img, cmap="gray"))
+            plots.append(ax.axis("off"))
             if labels is not None:
                 plots.append(ax.set_title(labels[i], fontsize=8))
         return plots
 
     anim = FuncAnimation(fig, animate, frames=len(images_list), interval=10, blit=False, repeat=True)
-    anim.save(path, writer='pillow', fps=10)
+    anim.save(path, writer="pillow", fps=10)
     plt.close()

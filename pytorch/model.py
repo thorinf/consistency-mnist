@@ -13,13 +13,13 @@ class ConvBlock(nn.Module):
             nn.Conv2d(input_dim, output_dim, kernel_size=3, padding=1),
             nn.GroupNorm(8, output_dim),
             nn.SiLU(),
-            nn.Dropout(p=dropout_prob)
+            nn.Dropout(p=dropout_prob),
         )
         self.conv2 = nn.Sequential(
             nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1),
             nn.GroupNorm(32, output_dim),
             nn.SiLU(),
-            nn.Dropout(p=dropout_prob)
+            nn.Dropout(p=dropout_prob),
         )
 
     def forward(self, x):
@@ -68,10 +68,7 @@ class UNet(nn.Module):
     def __init__(self, input_dim=1, output_dim=1, dropout_prob=0.0):
         super(UNet, self).__init__()
         self.time_mlp = nn.Sequential(
-            LearnedSinusoidalPosEmb(128),
-            nn.SiLU(),
-            nn.Dropout(p=dropout_prob),
-            nn.Linear(129, 512)
+            LearnedSinusoidalPosEmb(128), nn.SiLU(), nn.Dropout(p=dropout_prob), nn.Linear(129, 512)
         )
         self.cond_emb = nn.Sequential(
             nn.Embedding(11, 128),

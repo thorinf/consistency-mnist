@@ -6,17 +6,17 @@ import torch.nn as nn
 
 from utils import append_dims
 
-T = TypeVar('T', float, torch.Tensor)
+T = TypeVar("T", float, torch.Tensor)
 
 
 class Consistency:
     def __init__(
-            self,
-            sigma_min: float = 0.002,
-            sigma_max: float = 80.0,
-            sigma_data: float = 0.5,
-            rho: float = 7.0,
-            continuous: bool = False
+        self,
+        sigma_min: float = 0.002,
+        sigma_max: float = 80.0,
+        sigma_data: float = 0.5,
+        rho: float = 7.0,
+        continuous: bool = False,
     ) -> None:
         super(Consistency, self).__init__()
         self.continuous = continuous
@@ -28,29 +28,25 @@ class Consistency:
     def rho_schedule(self, u: T) -> T:
         # u [0,1]
         rho_inv = 1.0 / self.rho
-        sigma_max_pow_rho_inv = self.sigma_max ** rho_inv
-        sigmas = (sigma_max_pow_rho_inv + u * (self.sigma_min ** rho_inv - sigma_max_pow_rho_inv)) ** self.rho
+        sigma_max_pow_rho_inv = self.sigma_max**rho_inv
+        sigmas = (sigma_max_pow_rho_inv + u * (self.sigma_min**rho_inv - sigma_max_pow_rho_inv)) ** self.rho
         return sigmas
 
     @staticmethod
     def get_snr(sigma: T) -> T:
-        return sigma ** -2.0
+        return sigma**-2.0
 
     def get_weights(self, snr: T) -> T:
-        return snr + 1.0 / self.sigma_data ** 2.0
+        return snr + 1.0 / self.sigma_data**2.0
 
     def get_scaling(self, sigma: T) -> Tuple[T, T, T]:
-        c_skip = self.sigma_data ** 2 / ((sigma - self.sigma_min) ** 2 + self.sigma_data ** 2)
-        c_out = (sigma - self.sigma_min) * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
-        c_in = 1 / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
+        c_skip = self.sigma_data**2 / ((sigma - self.sigma_min) ** 2 + self.sigma_data**2)
+        c_out = (sigma - self.sigma_min) * self.sigma_data / (sigma**2 + self.sigma_data**2) ** 0.5
+        c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
         return c_skip, c_out, c_in
 
     def denoise(
-            self,
-            model: nn.Module,
-            x_t: torch.Tensor,
-            sigmas: torch.Tensor,
-            **model_kwargs: Any
+        self, model: nn.Module, x_t: torch.Tensor, sigmas: torch.Tensor, **model_kwargs: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         c_skip, c_out, c_in = self.get_scaling(sigmas)
         rescaled_t = append_dims(0.25 * torch.log(sigmas + 1e-44), x_t.ndim)
@@ -59,13 +55,13 @@ class Consistency:
         return model_output, denoised
 
     def loss_t(
-            self,
-            model: nn.Module,
-            target_model: nn.Module,
-            x_target: torch.Tensor,
-            t: torch.Tensor,
-            t_next: torch.Tensor,
-            **model_kwargs: Any
+        self,
+        model: nn.Module,
+        target_model: nn.Module,
+        x_target: torch.Tensor,
+        t: torch.Tensor,
+        t_next: torch.Tensor,
+        **model_kwargs: Any,
     ) -> torch.Tensor:
         z = torch.randn_like(x_target, device=x_target.device)
 
@@ -83,26 +79,23 @@ class Consistency:
         weights = self.get_weights(snrs)
         mse = ((denoised_x - target_x) ** 2.0).mean(-1)
 
-        consistency_loss = (append_dims(weights, mse.ndim) * mse)
+        consistency_loss = append_dims(weights, mse.ndim) * mse
         return consistency_loss.mean()
 
     def compute_loss(
-            self,
-            model: nn.Module,
-            target_model: nn.Module,
-            x_target: torch.Tensor,
-            num_scales: int,
-            **model_kwargs: Any
+        self, model: nn.Module, target_model: nn.Module, x_target: torch.Tensor, num_scales: int, **model_kwargs: Any
     ) -> torch.Tensor:
         offset = 1.0 / (num_scales - 1)
 
         if self.continuous:
-            rand_u_1 = torch.rand((x_target.shape[0],), dtype=x_target.dtype, device=x_target.device,
-                                  requires_grad=False)
+            rand_u_1 = torch.rand(
+                (x_target.shape[0],), dtype=x_target.dtype, device=x_target.device, requires_grad=False
+            )
             rand_u_1 = rand_u_1 * (1.0 - offset)
         else:
-            rand_u_1 = torch.randint(0, num_scales - 1, (x_target.shape[0],), device=x_target.device,
-                                     requires_grad=False)
+            rand_u_1 = torch.randint(
+                0, num_scales - 1, (x_target.shape[0],), device=x_target.device, requires_grad=False
+            )
             rand_u_1 = rand_u_1 / (num_scales - 1)
         rand_u_2 = torch.clamp(rand_u_1 + offset, 0.0, 1.0)
 
@@ -113,15 +106,15 @@ class Consistency:
 
     @torch.no_grad()
     def sample(
-            self,
-            model: nn.Module,
-            x_start: torch.Tensor,
-            ts: torch.Tensor,
-            z: torch.Tensor = None,
-            x_min: float = -1.0,
-            x_max: float = 1.0,
-            return_all: bool = False,
-            **model_kwargs: Any
+        self,
+        model: nn.Module,
+        x_start: torch.Tensor,
+        ts: torch.Tensor,
+        z: torch.Tensor = None,
+        x_min: float = -1.0,
+        x_max: float = 1.0,
+        return_all: bool = False,
+        **model_kwargs: Any,
     ) -> Union[torch.Tensor, List[torch.Tensor]]:
         x_list = []
 
@@ -134,7 +127,7 @@ class Consistency:
         for t in ts[1:]:
             t = append_dims(t, x.ndim)
             z = torch.randn_like(x) if z is None else z
-            x = x + z * (t ** 2 - self.sigma_min ** 2).sqrt()
+            x = x + z * (t**2 - self.sigma_min**2).sqrt()
             _, x = self.denoise(model, x, t, **model_kwargs)
             x = x.clamp(x_min, x_max)
 
